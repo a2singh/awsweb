@@ -22,3 +22,4 @@ jobs:
     - name: Deploy static site to S3 bucket
       run: aws s3 sync ./Test/ s3://demo-s3-gh-action --delete
       #completed 
+      #change image 
