@@ -1,7 +1,5 @@
-# CloudFront Origin Access Identity
 resource "aws_cloudfront_origin_access_identity" "this" {
   for_each = local.create_origin_access_identity ? var.origin_access_identities : {}
-
   comment = each.value
 
   lifecycle {
@@ -9,19 +7,16 @@ resource "aws_cloudfront_origin_access_identity" "this" {
   }
 }
 
-# CloudFront Origin Access Control
 resource "aws_cloudfront_origin_access_control" "this" {
   for_each = local.create_origin_access_control ? var.origin_access_control : {}
 
   name = each.key
-
-  description                       = each.value["description"]
+  description = each.value["description"]
   origin_access_control_origin_type = each.value["origin_type"]
-  signing_behavior                  = each.value["signing_behavior"]
-  signing_protocol                  = each.value["signing_protocol"]
+  signing_behavior = each.value["signing_behavior"]
+  signing_protocol = each.value["signing_protocol"]
 }
 
-# CloudFront Distribution
 resource "aws_cloudfront_distribution" "this" {
   count = var.create_distribution ? 1 : 0
 
@@ -37,46 +32,51 @@ resource "aws_cloudfront_distribution" "this" {
   web_acl_id          = var.web_acl_id
   tags                = var.tags
 
-  # Origins block
+  dynamic "logging_config" {
+    for_each = length(keys(var.logging_config)) == 0 ? [] : [var.logging_config]
+
+    content {
+      bucket          = logging_config.value["bucket"]
+      prefix          = lookup(logging_config.value, "prefix", null)
+      include_cookies = lookup(logging_config.value, "include_cookies", null)
+    }
+  }
+
   dynamic "origin" {
     for_each = var.origin
+
     content {
-      domain_name = origin.value.domain_name
-      origin_id   = lookup(origin.value, "origin_id", origin.key)
-      # Additional origin configuration if needed
-    }
-  }
+      domain_name              = origin.value.domain_name
+      origin_id                = lookup(origin.value, "origin_id", origin.key)
+      origin_path              = lookup(origin.value, "origin_path", "")
+      connection_attempts      = lookup(origin.value, "connection_attempts", null)
+      connection_timeout       = lookup(origin.value, "connection_timeout", null)
+      origin_access_control_id = lookup(origin.value, "origin_access_control_id", lookup(lookup(aws_cloudfront_origin_access_control.this, lookup(origin.value, "origin_access_control", ""), {}), "id", null))
 
-  # Default cache behavior
-  default_cache_behavior {
-    target_origin_id       = var.default_cache_behavior.target_origin_id
-    viewer_protocol_policy = var.default_cache_behavior.viewer_protocol_policy
-  }
+      dynamic "s3_origin_config" {
+        for_each = length(keys(lookup(origin.value, "s3_origin_config", {}))) == 0 ? [] : [lookup(origin.value, "s3_origin_config", {})]
 
-  # Geo restriction
-  restrictions {
-    geo_restriction {
-      restriction_type = var.geo_restriction.restriction_type
-      locations        = var.geo_restriction.locations
-    }
-  }
+        content {
+          origin_access_identity = lookup(s3_origin_config.value, "cloudfront_access_identity_path", lookup(lookup(aws_cloudfront_origin_access_identity.this, lookup(s3_origin_config.value, "origin_access_identity", ""), {}), "cloudfront_access_identity_path", null))
+        }
+      }
 
-  # Viewer certificate configuration
-  viewer_certificate {
-    cloudfront_default_certificate = var.viewer_certificate.cloudfront_default_certificate
-    minimum_protocol_version       = var.viewer_certificate.minimum_protocol_version
-  }
-}
+      dynamic "custom_origin_config" {
+        for_each = length(lookup(origin.value, "custom_origin_config", "")) == 0 ? [] : [lookup(origin.value, "custom_origin_config", "")]
 
-# Optional monitoring subscription
-resource "aws_cloudfront_monitoring_subscription" "this" {
-  count = var.create_distribution && var.create_monitoring_subscription ? 1 : 0
+        content {
+          http_port                = custom_origin_config.value.http_port
+          https_port               = custom_origin_config.value.https_port
+          origin_protocol_policy   = custom_origin_config.value.origin_protocol_policy
+          origin_ssl_protocols     = custom_origin_config.value.origin_ssl_protocols
+          origin_keepalive_timeout = lookup(custom_origin_config.value, "origin_keepalive_timeout", null)
+          origin_read_timeout      = lookup(custom_origin_config.value, "origin_read_timeout", null)
+        }
+      }
 
-  distribution_id = aws_cloudfront_distribution.this[0].id
+      dynamic "custom_header" {
+        for_each = lookup(origin.value, "custom_header", [])
 
-  monitoring_subscription {
-    realtime_metrics_subscription_config {
-      realtime_metrics_subscription_status = var.realtime_metrics_subscription_status
-    }
-  }
-}
+        content {
+          name  = custom_header.value.name
+          value = custom_header
